@@ -10,26 +10,32 @@ The goal is to ingest, validate, partition, and transform a large volume of unst
 
 ### Architecture Overview
 
-To achieve maximum scalability, cost-efficiency, and seamless integration with Studocu's current AWS-based stack, we implement a **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** utilizing serverless AWS services and dbt on Redshift Spectrum.
+To achieve maximum scalability, cost-efficiency, and seamless integration with Studocu's current AWS-based stack, we implement a **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** where the data remains entirely on **Amazon S3** at all layers. We run Python schema validation in **AWS Glue**, transform and materialize the data using **dbt on Athena**, and expose the final S3 Gold layers to analysts and Metabase through **Athena** or **Redshift Spectrum** without consuming local Redshift storage.
 
 ```mermaid
 graph TD
-    A[OpenSearch Website Logs] -->|Daily Exports / 5.2MB payloads| B(S3 Bronze Bucket <br> Raw JSON)
-    B -->|Triggers / Schedules| C[Airflow Orchestration]
-    C -->|1. Run Glue PySpark Job| D[AWS Glue ETL]
-    D -->|2. Validate Schema & Types| E{Validation?}
-    E -->|Pass| F[S3 Silver Bucket <br> Snappy Parquet / Partitioned]
-    E -->|Fail| G[S3 Rejected Bucket <br> JSON + validation_error]
-    C -->|3. Refresh Catalog| H[Glue Data Catalog]
-    F --> H
-    C -->|4. Trigger dbt| I[dbt on Redshift Spectrum / Athena]
-    H -->|Query via External Schema| I
-    I -->|5. Build Marts| J[S3 Gold Bucket <br> Snappy Parquet / Partitioned]
-    J --> H
-    C -->|6. Run dbt tests| K{Data Quality Tests}
-    K -->|Pass| L[Metabase BI Tool]
-    K -->|Fail| M[Slack / Email Alerts]
-    L -->|Query via Spectrum / Athena| J
+    %% Source
+    OS["OpenSearch logs"] -->|Daily Export| Bronze["Bronze S3<br>(Raw JSON)"]
+    
+    %% Glue Validation
+    Bronze --> GlueETL["AWS Glue ETL Job<br>(PySpark Validation)"]
+    GlueETL -->|Valid Records| Silver["Silver S3<br>(Clean Parquet)"]
+    GlueETL -->|Invalid Records| Rejected["Rejected S3<br>(Quarantined JSON)"]
+    
+    %% Cataloging & dbt
+    Silver -->|Cataloged| Catalog["Glue Data Catalog"]
+    Catalog -->|Input Source| dbt["dbt on Athena"]
+    dbt -->|Materialize Marts| Gold["Gold S3<br>(Marts Parquet)"]
+    Gold -->|Cataloged| Catalog
+    
+    %% Querying & BI
+    Catalog -->|Federated Query| Spectrum["Redshift Spectrum / Athena"]
+    Spectrum -->|Query Marts| Metabase["Metabase BI Tool"]
+    
+    %% Orchestration Control Plane (Airflow)
+    Airflow["Airflow Orchestrator"] -.->|1. Trigger| GlueETL
+    Airflow -.->|2. Trigger Crawler| Catalog
+    Airflow -.->|3. Trigger Run & Test| dbt
 ```
 
 ### Component Design Details
@@ -40,7 +46,7 @@ graph TD
 | **ETL & Validation** | **AWS Glue (PySpark)** | Serverless Spark. Scales horizontally to handle 12.4 TB of historical logs. Performs row-level validation, formats fields, and writes compressed Parquet. |
 | **Data Catalog** | **Glue Catalog & Crawler** | Automatically maintains table schemas and partition metadata, making the S3 data lake queryable. |
 | **DWH Ingestion / Query** | **Redshift Spectrum / Athena** | Enables querying the S3 Silver and Gold layers directly using external tables. Avoids loading the 12.4 TB dataset (or its aggregates) into Redshift local storage, saving significant costs while maintaining query access. |
-| **Data Transformation & Modeling** | **dbt (data build tool)** | Defines SQL transformations (Staging & Gold Marts). It writes both staging and final aggregated results as external tables back to S3, using Athena or Redshift Spectrum. |
+| **Data Transformation & Modeling** | **dbt (on Athena)** | Defines SQL transformations (Staging & Gold Marts). It uses the `dbt-athena-community` adapter to write both staging and final aggregated results as external tables back to S3, completely bypassing Redshift local storage write limitations. |
 | **Orchestration** | **Apache Airflow** | Schedules daily runs, runs crawlers, invokes dbt, and manages dependencies and alerts. |
 
 ---
@@ -140,7 +146,8 @@ The Airflow DAG ([studocu_daily_pipeline.py](file:///Users/nishanth_p/Desktop/St
 
 ### 1. Requirements & Dependencies
 * Python 3.11+
-* dependencies listed in [requirements.txt](file:///Users/nishanth_p/Desktop/Studocu/requirements.txt) (`boto3`, `dbt-redshift`, etc.)
+* CLI and library dependencies are listed in [pyproject.toml](file:///Users/nishanth_p/Desktop/Studocu/pyproject.toml) (e.g., `dbt-athena-community`, `boto3`).
+* Airflow provider dependencies are listed in [requirements.txt](file:///Users/nishanth_p/Desktop/Studocu/requirements.txt).
 
 ### 2. Generate and Upload Fake Events
 To generate a mock dataset representing 3 days of traffic (including 5% anomalies/bad records) and upload it to your S3 bucket:
