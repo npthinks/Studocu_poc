@@ -14,29 +14,40 @@ To achieve maximum scalability, cost-efficiency, and seamless integration with S
 
 ```mermaid
 graph TD
-    %% Source
-    OS["OpenSearch logs"] -->|Daily Export| Bronze["Bronze S3<br>(Raw JSON)"]
+    subgraph Storage_Layers ["S3 Data Lake Storage (AWS S3)"]
+        Bronze["S3 Bronze Bucket<br>(Raw JSON Logs)"]
+        Silver["S3 Silver Bucket<br>(Validated Parquet)"]
+        Gold["S3 Gold Bucket<br>(Aggregated Marts)"]
+        Rejected["S3 Rejected Bucket<br>(JSON Quarantine)"]
+    end
+
+    subgraph Compute_&_Query ["Compute & Query Engines (Serverless)"]
+        GlueETL["AWS Glue ETL Job<br>(PySpark Validation)"]
+        dbtAthena["dbt on Athena<br>(SQL Transformations)"]
+        QueryLayer["Redshift Spectrum / Athena<br>(Federated Query)"]
+    end
+
+    %% Ingestion to Bronze
+    OS["OpenSearch Logs"] -->|Daily Export| Bronze
     
-    %% Glue Validation
-    Bronze --> GlueETL["AWS Glue ETL Job<br>(PySpark Validation)"]
-    GlueETL -->|Valid Records| Silver["Silver S3<br>(Clean Parquet)"]
-    GlueETL -->|Invalid Records| Rejected["Rejected S3<br>(Quarantined JSON)"]
+    %% Bronze to Silver/Rejected via Glue
+    Bronze --> GlueETL
+    GlueETL -->|Validation Pass| Silver
+    GlueETL -->|Validation Fail| Rejected
     
-    %% Cataloging & dbt
-    Silver -->|Cataloged| Catalog["Glue Data Catalog"]
-    Catalog -->|Input Source| dbt["dbt on Athena"]
-    dbt -->|Materialize Marts| Gold["Gold S3<br>(Marts Parquet)"]
-    Gold -->|Cataloged| Catalog
+    %% Silver to Gold via dbt
+    Silver --> dbtAthena
+    dbtAthena -->|Materialize Parquet| Gold
     
-    %% Querying & BI
-    Catalog -->|Federated Query| Spectrum["Redshift Spectrum / Athena"]
-    Spectrum -->|Query Marts| Metabase["Metabase BI Tool"]
-    
-    %% Orchestration Control Plane (Airflow)
-    Airflow["Airflow Orchestrator"] -.->|1. Trigger| GlueETL
-    Airflow -.->|2. Trigger Crawler| Catalog
-    Airflow -.->|3. Trigger Run & Test| dbt
+    %% Gold to Consumption via Spectrum/Athena
+    Gold --> QueryLayer
+    QueryLayer -->|Query Marts| Metabase["Metabase BI Tool"]
 ```
+
+> **Note on Orchestration & Metadata Cataloging**:
+> * **Orchestration**: The entire end-to-end pipeline is scheduled and coordinated sequentially by **Apache Airflow** (Glue ETL $\rightarrow$ Glue Crawler $\rightarrow$ dbt Run $\rightarrow$ dbt Test).
+> * **Metadata Discovery**: Both the **Silver** and **Gold** S3 buckets are automatically cataloged using AWS Glue Crawlers. This maintains the central schema registry in the **Glue Data Catalog**, allowing **dbt** and **Redshift Spectrum** to query the files transparently.
+
 
 ### Component Design Details
 
