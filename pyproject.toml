@@ -1,0 +1,15 @@
+[project]
+name = "studocu"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.43.27",
+    "dbt-athena-community>=1.10.1",
+    "dbt-core>=1.11.11",
+    "fastparquet>=2026.5.0",
+    "numpy>=2.4.6",
+    "pyarrow>=24.0.0",
+    "pyspark>=4.1.2",
+]

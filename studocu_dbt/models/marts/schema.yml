@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_events
+    description: "Cleaned event-level data, one row per event"
+    columns:
+      - name: event_id
+        description: "Unique event identifier"
+        data_tests:
+          - not_null
+          - unique
+
+  - name: daily_event_summary
+    description: "Daily aggregated event metrics by country, event_type, device_type. Used by SEO team and analysts."
+    columns:
+      - name: event_date
+        description: "Date of the events being summarized"
+        data_tests:
+          - not_null
+      - name: event_count
+        description: "Total number of events"
+        data_tests:
+          - not_null
+      - name: unique_users
+        description: "Distinct users in this grouping"
+        data_tests:
+          - not_null

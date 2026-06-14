@@ -1,0 +1,38 @@
+version: 2
+
+sources:
+  - name: studocu_poc
+    description: "Silver layer tables produced by the Glue ETL pipeline"
+    database: awsdatacatalog
+    schema: studocu_poc
+    tables:
+      - name: silver
+        description: "Validated event-level data from OpenSearch logs"
+        columns:
+          - name: event_id
+            description: "Unique identifier per event"
+            data_tests:
+              - not_null
+              - unique
+          - name: user_id
+            description: "User who generated the event"
+            data_tests:
+              - not_null
+          - name: event_type
+            description: "Type of user action"
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    [
+                      "document_view",
+                      "document_download",
+                      "search",
+                      "signup",
+                      "login",
+                      "quiz_attempt",
+                    ]
+          - name: event_timestamp
+            description: "When the event occurred"
+            data_tests:
+              - not_null
