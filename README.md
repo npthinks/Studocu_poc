@@ -70,6 +70,7 @@ Handling the **12.4 TB** scale difference between the historical backfill and th
 * **Glue Job Scaling**: We scale the Glue job by setting the worker type to `G.2X` (16 vCPU, 64 GB RAM) and allocation up to `50 DPUs` (Data Processing Units) to maximize parallelism.
 * **Optimize Spark Partitions**: We adjust `spark.sql.files.maxPartitionBytes` to prevent Out-Of-Memory (OOM) errors when parsing millions of small log files, and coalesce output files to avoid the "small file problem."
 * **Athena/Spectrum Bulk Queries**: Using S3 partitioning by `year/month/day` enables us to run backfills incrementally in batches (e.g., month-by-month or year-by-year) to stay within concurrency limits.
+* **EMR Historical Backfill Script**: We have included a dedicated PySpark script at [emr/emr_historical_backfill.py](file:///Users/nishanth_p/Desktop/Studocu/emr/emr_historical_backfill.py) and a cluster launch wrapper [emr/emr_cluster_launch.sh](file:///Users/nishanth_p/Desktop/Studocu/emr/emr_cluster_launch.sh). The Spark validation logic mirrors the live Glue daily job. It was not executed live during the POC because the backfill is a major one-time investment that should follow production validation of the daily pipeline.
 
 ### B. Daily Data Ingestion
 * **Incremental Runs**: The daily Airflow pipeline only processes the latest partition (`/bronze/year=YYYY/month=MM/day=DD/`).
@@ -102,7 +103,11 @@ The codebase contains a functional, production-ready POC structured as follows:
 ```
 ├── README.md                      <-- Case study overview and architecture design
 ├── generate_events.py             <-- Test dataset generator & S3 uploader
-├── glue_bronze_to_silver.py       <-- Glue PySpark ETL Script
+├── glue/
+│   └── glue_bronze_to_silver.py   <-- Glue PySpark ETL Script (Daily Ingestion)
+├── emr/
+│   ├── emr_cluster_launch.sh      <-- One-time EMR cluster provision shell script
+│   └── emr_historical_backfill.py <-- EMR PySpark Job for 12.4 TB Backfill
 ├── airflow/
 │   └── dags/
 │       └── studocu_daily_pipeline.py <-- Production Airflow DAG definition
@@ -120,7 +125,7 @@ The codebase contains a functional, production-ready POC structured as follows:
 ### Key Components
 
 #### 1. Ingestion & Validation Script
-The PySpark script ([glue_bronze_to_silver.py](file:///Users/nishanth_p/Desktop/Studocu/glue_bronze_to_silver.py)) implements robust validation:
+The PySpark script ([glue/glue_bronze_to_silver.py](file:///Users/nishanth_p/Desktop/Studocu/glue/glue_bronze_to_silver.py)) implements robust validation:
 * Defines an explicit schema (`expected_schema`) to prevent schema drift.
 * Flags and isolates anomalies (missing keys, invalid event types, malformed dates) into a `validation_error` field.
 * Writes valid rows as compressed, partitioned Parquet to `s3://.../silver/`.
@@ -136,6 +141,10 @@ The Airflow DAG ([studocu_daily_pipeline.py](file:///Users/nishanth_p/Desktop/St
 #### 3. dbt Models
 * **Staging Model** ([stg_events.sql](file:///Users/nishanth_p/Desktop/Studocu/studocu_dbt/models/staging/stg_events.sql)): Interfaces with the Glue Catalog data and casts formats.
 * **Gold Mart Model** ([daily_event_summary.sql](file:///Users/nishanth_p/Desktop/Studocu/studocu_dbt/models/marts/daily_event_summary.sql)): Aggregates event counts, unique users, unique sessions, document counts, premium user interactions, and average session durations by `country_code`, `device_type`, and `event_type`.
+
+#### 4. One-Time Historical Backfill (EMR)
+* **EMR Cluster Provisioner** ([emr/emr_cluster_launch.sh](file:///Users/nishanth_p/Desktop/Studocu/emr/emr_cluster_launch.sh)): Bash utility using the AWS CLI to create a transient EMR 7.0.0 cluster configured with Spark, dynamic allocation, auto-scaling (5 to 50 nodes), and Auto-Termination.
+* **PySpark Backfill Job** ([emr/emr_historical_backfill.py](file:///Users/nishanth_p/Desktop/Studocu/emr/emr_historical_backfill.py)): Custom Spark session tuned for shuffle-heavy operations (adaptive execution, Kryo serialization). Reads from the raw bronze location, processes only files in the requested backfill date range, applies schema validation rules matching the daily job, writes snappy-compressed Parquet to silver, and writes failures to rejected.
 
 ---
 
@@ -167,7 +176,7 @@ python generate_events.py
 ```
 
 ### 3. Deploy Glue Script
-Upload [glue_bronze_to_silver.py](file:///Users/nishanth_p/Desktop/Studocu/glue_bronze_to_silver.py) to your AWS Glue script bucket location and configure a Glue Job referencing the script.
+Upload [glue/glue_bronze_to_silver.py](file:///Users/nishanth_p/Desktop/Studocu/glue/glue_bronze_to_silver.py) to your AWS Glue script bucket location and configure a Glue Job referencing the script.
 
 ### 4. Running dbt
 To compile and test the dbt models:
