@@ -22,12 +22,14 @@ graph TD
     E -->|Fail| G[S3 Rejected Bucket <br> JSON + validation_error]
     C -->|3. Refresh Catalog| H[Glue Data Catalog]
     F --> H
-    C -->|4. Trigger dbt| I[dbt on Redshift Spectrum]
+    C -->|4. Trigger dbt| I[dbt on Redshift Spectrum / Athena]
     H -->|Query via External Schema| I
-    I -->|5. Build Marts| J[Redshift DWH Gold Layer]
+    I -->|5. Build Marts| J[S3 Gold Bucket <br> Snappy Parquet / Partitioned]
+    J --> H
     C -->|6. Run dbt tests| K{Data Quality Tests}
     K -->|Pass| L[Metabase BI Tool]
     K -->|Fail| M[Slack / Email Alerts]
+    L -->|Query via Spectrum / Athena| J
 ```
 
 ### Component Design Details
@@ -37,8 +39,8 @@ graph TD
 | **Storage (Bronze / Silver / Rejected)** | **Amazon S3** | Severless storage with 99.999999999% durability. Highly cost-effective. Organized into Bronze (raw JSON), Silver (clean Parquet), and Rejected (validation failures). |
 | **ETL & Validation** | **AWS Glue (PySpark)** | Serverless Spark. Scales horizontally to handle 12.4 TB of historical logs. Performs row-level validation, formats fields, and writes compressed Parquet. |
 | **Data Catalog** | **Glue Catalog & Crawler** | Automatically maintains table schemas and partition metadata, making the S3 data lake queryable. |
-| **DWH Ingestion / Query** | **Redshift Spectrum** | Enables querying the S3 Silver layer directly using external tables. Avoids loading 12.4 TB into Redshift local storage, saving significant costs while maintaining query access. |
-| **Data Transformation & Modeling** | **dbt (data build tool)** | Defines SQL transformations (Staging & Marts) with built-in version control, testing, and documentation. |
+| **DWH Ingestion / Query** | **Redshift Spectrum / Athena** | Enables querying the S3 Silver and Gold layers directly using external tables. Avoids loading the 12.4 TB dataset (or its aggregates) into Redshift local storage, saving significant costs while maintaining query access. |
+| **Data Transformation & Modeling** | **dbt (data build tool)** | Defines SQL transformations (Staging & Gold Marts). It writes both staging and final aggregated results as external tables back to S3, using Athena or Redshift Spectrum. |
 | **Orchestration** | **Apache Airflow** | Schedules daily runs, runs crawlers, invokes dbt, and manages dependencies and alerts. |
 
 ---
@@ -65,11 +67,11 @@ Our proposed solution fits cleanly into Studocu’s existing stack without requi
 1. **Leveraging Existing Redshift Cluster (Redshift Spectrum)**:
    * We register the Glue Catalog schema as an external schema in Redshift.
    * Redshift Spectrum delegates S3 query execution to a dedicated virtualization layer.
-   * Analysts can run SQL joins combining S3 event logs with core DWH tables (e.g., users, documents) in Redshift.
+   * Analysts can run SQL joins combining S3 event logs (both Silver event-level and Gold aggregates) with core local DWH tables (e.g., users, documents) in Redshift.
 2. **dbt Integration**:
-   * dbt runs on top of Redshift and creates tables/views on top of the external Spectrum tables, writing aggregates back into the local Gold layer for speed.
+   * dbt runs on top of Redshift/Athena. It creates models as external tables, meaning both the Silver (staging) and Gold (marts) data reside entirely on S3. No local Redshift storage is consumed, yet all tables are fully queryable from Redshift or Athena.
 3. **Metabase BI**:
-   * Metabase queries the aggregated Marts in Redshift, which are highly performant and pre-aggregated.
+   * Metabase queries the aggregated Marts in S3 via either Athena (for serverless pay-per-query pricing) or Redshift Spectrum (to easily join with core dimensional tables).
 4. **Future Extensions**:
    * **AWS Lake Formation**: Add fine-grained column-level/row-level permissions for sensitive user logs.
    * **Apache Iceberg Format**: If events need to be deleted (e.g., GDPR requests) or mutated, transition the Silver layer to Apache Iceberg format.
